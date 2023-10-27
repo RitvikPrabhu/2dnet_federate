@@ -38,6 +38,9 @@ from ddnet_utils import serialize_loss_item
 from socket import gethostname
 import torch.cuda.amp as amp
 
+import syft as sy
+from syft.frameworks.torch.fl import utils
+
 def dd_train(args):
     port = args.port
     os.environ['MASTER_PORT'] = str(port)
@@ -90,7 +93,7 @@ def dd_train(args):
     torch.cuda.manual_seed(1111)
     # necessary for AMP to work
     model_file: str
-    model_file = f'weights_{str(batch_size)}_{str(epochs + retrain)}.pt'
+    model_file = f'/projects/synergy_lab/ritvik/ComputeCovid/FederatedLearning/2dnet_federate/weights_{str(batch_size)}_{str(epochs + retrain)}.pt'
     if mod == "vgg16":
         from core.vgg16.ddnet_model import DD_net
         model = DD_net(devc=device)
@@ -169,7 +172,17 @@ def dd_train(args):
     dist.destroy_process_group()
     return
 
+# Define a function to assign data to workers based on conditions
+    def assign_to_worker(data, name):
+        if "image" in name:
+            return data.send(client1)
+        elif "L192" in name:
+            return data.send(client2)
+        elif "sub" in name:
+            return data.send(client3)
+
 def trainer_new(model, world_size, global_rank, local_rank,scheduler, optimizer, sched_type = "expo" , output_path=".", enable_profile=False):
+
     global dir_pre
     dir_pre = output_path
     print(f"staging dataset on GPU {local_rank} of node {gethostname()}")
@@ -178,7 +191,27 @@ def trainer_new(model, world_size, global_rank, local_rank,scheduler, optimizer,
     root_val_h = "/projects/synergy_lab/garvit217/enhancement_data/val/HQ/"
     root_val_l = "/projects/synergy_lab/garvit217/enhancement_data/val/LQ/"
     from data_loader.custom_load import CTDataset
+
+    hook = sy.TorchHook(torch)
+    me = sy.local_worker
+    
+    client1 = sy.VirtualWorker(hook, id="client 1")
+    client2 = sy.VirtualWorker(hook, id="client 2")
+    client3 = sy.VirtualWorker(hook, id="client 3")
+
     train_loader = CTDataset(root_train_h, root_train_l, 5120, local_rank,  batch_size)
+    train_loader = train_loader.send(eval(f"client{local_rank+1}"))  # Assign data to the corresponding worker
+
+    # Get the length of the data on each client
+    length_client1 = len(data_client1)
+    length_client2 = len(data_client2)
+    length_client3 = len(data_client3)
+
+    # Print the lengths
+    print(f"Length of data on client 1: {length_client1}")
+    print(f"Length of data on client 2: {length_client2}")
+    print(f"Length of data on client 3: {length_client3}")
+
     val_loader = CTDataset(root_val_h, root_val_l, 784, local_rank,  batch_size)
     scaler = torch.cuda.amp.GradScaler()
     sparsified = False
@@ -200,6 +233,10 @@ def trainer_new(model, world_size, global_rank, local_rank,scheduler, optimizer,
 
     for k in range( epochs +  retrain):
         print(f"epoch: {k}")
+        model.send(client1)
+        model.send(client2)
+        model.send(client3)
+
         if global_rank == 0:
             train_index_list = torch.randperm(len(train_loader), generator=g).tolist()
             val_index_list = torch.randperm(len(val_loader), generator=g).tolist()
@@ -240,7 +277,9 @@ def trainer_new(model, world_size, global_rank, local_rank,scheduler, optimizer,
             for index in range(0, len(train_index_list), batch_size):
                 # print(f"fetching first { batch_size} items from index: {index}: ")
                 # print(f"fetching indices: {train_index_list[index: index+  batch_size]}")
-                sample_batched = train_loader.get_item(train_index_list[index: index + batch_size])
+                # sample_batched = train_loader.get_item(train_index_list
+                # [index: index + batch_size])
+                sample_batched = train_index_list[index: index + batch_size].get()
                 # print(f"item recieved:  {sample_batched}")
                 HQ_img, LQ_img, maxs, mins, file_name = sample_batched['HQ'], sample_batched['LQ'], \
                     sample_batched['max'], sample_batched['min'], sample_batched['vol']
@@ -278,6 +317,17 @@ def trainer_new(model, world_size, global_rank, local_rank,scheduler, optimizer,
                 scheduler.step(loss)
             else:
                 scheduler.step()
+            
+            # Aggregate Gradients
+            model.get()
+
+            # Update Global Model
+            optimizer.step()
+
+            # Synchronize Models
+            model.send(client1)
+            model.send(client2)
+            model.send(client3)
 
             print("Validation")
             for index in range(0, len(val_index_list), batch_size):

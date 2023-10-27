@@ -64,8 +64,10 @@ class CTDataset(object):
         self.img_list_h = os.listdir(self.data_root_h)
         self.img_list_l.sort()
         self.img_list_h.sort()
-        self.img_list_l = self.img_list_l[0:length]
-        self.img_list_h = self.img_list_h[0:length]
+        self.img_list_l = self.img_list_l[int(length/2):]
+        self.img_list_h = self.img_list_h[int(length/2):]
+
+        print("Starting data from " + self.img_list_l[0] + " and ending at " + self.img_list_l[-1])
         #         self.transform = transform
 
         self.tensor_list_hq = []
@@ -117,7 +119,7 @@ class CTDataset(object):
         # self.ba_tensor_list_fname = self.create_batch(self.tensor_list_fname,self.batch_size,False)
 
         print("done staging data to GPU")
-
+        
     def get_item(self, index_list):
         try:
             # assert (len(index_list) == self.batch_size)
